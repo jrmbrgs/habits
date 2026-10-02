@@ -13,9 +13,9 @@ const DAY_LETTERS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 const DAY_SHORT = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 const MONTHS = ['janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'];
 const SUGGESTIONS = [
-  { name: 'Lire 10 pages', emoji: '📖', color: '#6aa8f0' },
+  { name: 'Lire', emoji: '📖', color: '#6aa8f0' },
   { name: 'Marcher 20 min', emoji: '🚶', color: '#7fdc9f' },
-  { name: "Boire de l'eau", emoji: '💧', color: '#5ed1d1', target: 3 },
+  { name: 'Courir', emoji: '🏃', color: '#5ed1d1' },
   { name: 'Méditer 5 min', emoji: '🧘', color: '#b48cf0' },
   { name: 'Sport', emoji: '💪', color: '#f07a6a', schedule: { type: 'weekly', days: [], times: 3 } },
   { name: 'Écrire', emoji: '✍️', color: '#f0a35a' },
@@ -219,8 +219,8 @@ function render() {
 
 function emptyView() {
   return `<div class="empty">
-    <h2>Un jour, ou jour un.</h2>
-    <p>Choisis une petite action à faire aujourd'hui.<br>Aujourd'hui, ça suffit.</p>
+    <h2>Tes objectifs,<br>un jour à la fois.</h2>
+    <p>Les grands changements naissent de petites actions répétées.<br>Choisis la première.</p>
     <div class="suggest">${SUGGESTIONS.map((s, i) => `<button data-act="suggest" data-i="${i}"><span>${s.emoji}</span>${esc(s.name)}</button>`).join('')}</div>
     <button class="btn accent" data-act="new" style="margin-top:14px">Créer ma propre habitude</button>
   </div>`;
@@ -603,6 +603,7 @@ function openSettings() {
   openSheet((body, close) => {
     body.innerHTML = `
       <div class="sheet-head"><span></span><h2>Réglages</h2><button class="primary" data-a="close">OK</button></div>
+      <div class="field"><span class="label">Apparence</span><div class="seg" id="theme-seg"></div></div>
       <div class="field"><span class="label">Synchronisation</span><div id="sync-box"></div></div>
       <div class="field"><span class="label">Sauvegarde</span>
       <button class="btn" data-a="export" style="margin-top:0">Exporter une sauvegarde</button>
@@ -610,7 +611,7 @@ function openSettings() {
       <input type="file" id="f-import" accept="application/json,.json" hidden></div>
       <button class="btn danger" data-a="reset" style="margin-top:24px">Tout effacer</button>
       <p class="note" style="text-align:center;margin-top:18px">${state.habits.length} habitudes · ${Object.keys(state.log).length} jours enregistrés</p>`;
-    drawSyncBox();
+    drawSyncBox(); drawThemeSeg();
     const file = body.querySelector('#f-import');
     file.addEventListener('change', async () => {
       const f = file.files[0];
@@ -634,6 +635,7 @@ function openSettings() {
       if (a === 'import') file.click();
       if (a === 'export') exportData();
       if (a === 'sync-now') syncNow();
+      if (a === 'theme') { setTheme(e.target.closest('[data-a]').dataset.v); drawThemeSeg(); }
       if (a === 'sync-connect') {
         const token = body.querySelector('#f-token').value.trim();
         if (!token) return toast('Colle ton token GitHub');
@@ -774,6 +776,30 @@ function drawSyncBox() {
     <div class="order"><button class="btn" data-a="sync-now">Synchroniser</button><button class="btn danger" data-a="sync-off">Déconnecter</button></div>`;
 }
 
+/* ---------- Thème (par appareil, non synchronisé) ---------- */
+const THEME_KEY = 'habits.theme';
+function getTheme() { try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; } }
+function setTheme(t) {
+  try { t === 'auto' ? localStorage.removeItem(THEME_KEY) : localStorage.setItem(THEME_KEY, t); } catch (e) {}
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  applyThemeColor();
+}
+/** Aligne la couleur de la barre système sur le thème effectif. */
+function applyThemeColor() {
+  const t = getTheme();
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+    if (!m.dataset.media) m.dataset.media = m.media;
+    m.media = t === 'auto' ? m.dataset.media : (m.dataset.media.includes(t) ? '' : 'not all');
+  });
+}
+function drawThemeSeg() {
+  const el = document.getElementById('theme-seg');
+  if (!el) return;
+  const t = getTheme();
+  el.innerHTML = [['auto', 'Auto'], ['light', 'Clair'], ['dark', 'Sombre']]
+    .map(([v, l]) => `<button data-a="theme" data-v="${v}" class="${t === v ? 'sel' : ''}">${l}</button>`).join('');
+}
+
 /* ---------- Toast ---------- */
 let toastTimer;
 function toast(msg) {
@@ -791,6 +817,7 @@ document.addEventListener('visibilitychange', () => {
     syncNow();
   } else if (syncTimer) syncNow(); // on part : envoie ce qui reste en attente
 });
+applyThemeColor();
 render();
 syncNow();
 
