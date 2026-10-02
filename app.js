@@ -27,16 +27,25 @@ let tab = 'today';
 let statsSel = 'all';
 let popId = null;
 
-function load() {
-  try {
-    const s = JSON.parse(localStorage.getItem(STORE));
-    if (s && Array.isArray(s.habits) && s.log) return s;
-  } catch (e) {}
-  return { v: 1, habits: [], log: {} };
+/*
+ * stamps[`${day}|${habitId}`] = date de la dernière modif d'une case,
+ * deleted[habitId] = date de suppression, habit.updatedAt, orderAt :
+ * ces horodatages permettent de fusionner les données de plusieurs appareils.
+ */
+function emptyState() { return { v: 2, habits: [], log: {}, stamps: {}, deleted: {}, orderAt: 0 }; }
+function normalize(s) {
+  if (!s || !Array.isArray(s.habits) || typeof s.log !== 'object') return emptyState();
+  s.v = 2; s.stamps ||= {}; s.deleted ||= {}; s.orderAt ||= 0;
+  for (const h of s.habits) h.updatedAt ||= 0;
+  return s;
 }
-function save() {
+function load() {
+  try { return normalize(JSON.parse(localStorage.getItem(STORE))); } catch (e) { return emptyState(); }
+}
+function persist() {
   try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { toast('Sauvegarde impossible'); }
 }
+function save() { persist(); scheduleSync(); }
 
 /* ---------- Dates ---------- */
 const pad = n => String(n).padStart(2, '0');
@@ -53,7 +62,8 @@ function setVal(h, k, v) {
   const day = state.log[k] || (state.log[k] = {});
   if (v === undefined || v === 0) delete day[h.id]; else day[h.id] = v;
   if (!Object.keys(day).length) delete state.log[k];
-  if (v !== undefined && v !== 0 && k < h.createdAt) h.createdAt = k; // log rétroactif
+  state.stamps[`${k}|${h.id}`] = Date.now();
+  if (v !== undefined && v !== 0 && k < h.createdAt) { h.createdAt = k; h.updatedAt = Date.now(); } // log rétroactif
   save();
 }
 function scheduledOn(h, d) {
@@ -462,6 +472,14 @@ document.querySelector('.tabbar').addEventListener('click', e => {
 $('#btn-add').addEventListener('click', () => openEditor());
 $('#btn-settings').addEventListener('click', openSettings);
 
+/** Supprime une habitude et son historique, en gardant une trace pour la synchro. */
+function removeHabit(id) {
+  state.habits = state.habits.filter(x => x.id !== id);
+  state.deleted[id] = Date.now();
+  for (const k in state.log) { delete state.log[k][id]; if (!Object.keys(state.log[k]).length) delete state.log[k]; }
+  for (const sk in state.stamps) if (sk.endsWith('|' + id)) delete state.stamps[sk];
+}
+
 function addHabit(d) {
   state.habits.push({
     id: uid(),
@@ -471,6 +489,7 @@ function addHabit(d) {
     schedule: d.schedule || { type: 'daily', days: [], times: 3 },
     target: d.target || 1,
     createdAt: key(today()),
+    updatedAt: Date.now(),
   });
   save(); render();
 }
@@ -557,20 +576,20 @@ function openEditor(h) {
           const i = state.habits.findIndex(x => x.id === h.id), j = i + +v;
           if (j < 0 || j >= state.habits.length) return;
           [state.habits[i], state.habits[j]] = [state.habits[j], state.habits[i]];
+          state.orderAt = Date.now();
           save(); render(); toast(+v < 0 ? 'Remontée' : 'Descendue');
           return;
         }
         case 'delete':
           if (!confirm(`Supprimer « ${h.name} » et tout son historique ?`)) return;
-          state.habits = state.habits.filter(x => x.id !== h.id);
-          for (const k in state.log) { delete state.log[k][h.id]; if (!Object.keys(state.log[k]).length) delete state.log[k]; }
+          removeHabit(h.id);
           save(); render(); close(); toast('Habitude supprimée');
           return;
         case 'save': {
           if (!d.name.trim()) { body.querySelector('#f-name').focus(); return toast('Donne-lui un nom'); }
           if (s.type === 'weekdays' && !s.days.length) return toast('Choisis au moins un jour');
           if (isNew) addHabit(d);
-          else { Object.assign(h, { name: d.name.trim(), emoji: d.emoji, color: d.color, schedule: d.schedule, target: d.target }); save(); render(); }
+          else { Object.assign(h, { name: d.name.trim(), emoji: d.emoji, color: d.color, schedule: d.schedule, target: d.target, updatedAt: Date.now() }); save(); render(); }
           return close();
         }
       }
@@ -584,12 +603,14 @@ function openSettings() {
   openSheet((body, close) => {
     body.innerHTML = `
       <div class="sheet-head"><span></span><h2>Réglages</h2><button class="primary" data-a="close">OK</button></div>
-      <p class="note">Tes données restent sur cet appareil, sans compte. Pense à faire une sauvegarde de temps en temps : si tu supprimes l'app de l'écran d'accueil, elles disparaissent.</p>
-      <button class="btn" data-a="export">Exporter une sauvegarde</button>
+      <div class="field"><span class="label">Synchronisation</span><div id="sync-box"></div></div>
+      <div class="field"><span class="label">Sauvegarde</span>
+      <button class="btn" data-a="export" style="margin-top:0">Exporter une sauvegarde</button>
       <button class="btn" data-a="import">Importer une sauvegarde</button>
-      <input type="file" id="f-import" accept="application/json,.json" hidden>
+      <input type="file" id="f-import" accept="application/json,.json" hidden></div>
       <button class="btn danger" data-a="reset" style="margin-top:24px">Tout effacer</button>
       <p class="note" style="text-align:center;margin-top:18px">${state.habits.length} habitudes · ${Object.keys(state.log).length} jours enregistrés</p>`;
+    drawSyncBox();
     const file = body.querySelector('#f-import');
     file.addEventListener('change', async () => {
       const f = file.files[0];
@@ -598,7 +619,13 @@ function openSettings() {
         const data = JSON.parse(await f.text());
         if (!Array.isArray(data.habits) || typeof data.log !== 'object') throw new Error();
         if (!confirm(`Remplacer tes données par cette sauvegarde (${data.habits.length} habitudes) ?`)) return;
-        state = data; save(); render(); close(); toast('Sauvegarde importée');
+        // l'import devient la version la plus récente, y compris face aux autres appareils
+        const now = Date.now(), imported = normalize(data);
+        for (const h of state.habits) if (!imported.habits.some(x => x.id === h.id)) imported.deleted[h.id] = now;
+        for (const h of imported.habits) h.updatedAt = now;
+        for (const k in imported.log) for (const id in imported.log[k]) imported.stamps[`${k}|${id}`] = now;
+        imported.orderAt = now;
+        state = imported; save(); render(); close(); toast('Sauvegarde importée');
       } catch (e) { toast('Fichier invalide'); }
     });
     body.addEventListener('click', async e => {
@@ -606,8 +633,20 @@ function openSettings() {
       if (a === 'close') close();
       if (a === 'import') file.click();
       if (a === 'export') exportData();
+      if (a === 'sync-now') syncNow();
+      if (a === 'sync-connect') {
+        const token = body.querySelector('#f-token').value.trim();
+        if (!token) return toast('Colle ton token GitHub');
+        sync = { token, gistId: null, last: null, error: null }; saveSync();
+        drawSyncBox(); syncNow();
+      }
+      if (a === 'sync-off' && confirm('Déconnecter cet appareil ? Tes données restent ici et sur GitHub.')) {
+        sync = {}; saveSync(); drawSyncBox();
+      }
       if (a === 'reset' && confirm('Effacer toutes les habitudes et tout l\'historique ? C\'est définitif.')) {
-        state = { v: 1, habits: [], log: {} }; save(); render(); close();
+        for (const h of [...state.habits]) removeHabit(h.id);
+        state.log = {}; state.stamps = {}; state.orderAt = Date.now();
+        save(); render(); close();
       }
     });
   });
@@ -625,6 +664,116 @@ async function exportData() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/* =========================================================
+   Synchro via un gist GitHub privé
+   ========================================================= */
+const SYNC_KEY = 'habits.sync';
+const GIST_FILE = 'habits.json';
+const GIST_DESC = 'Habits — synchronisation';
+let sync = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch (e) { return {}; } })();
+let syncTimer = null, syncing = false, syncAgain = false;
+
+function saveSync() { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch (e) {} }
+function scheduleSync(delay = 1500) {
+  if (!sync.token) return;
+  clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, delay);
+}
+
+/** Fusionne deux états : pour chaque case et chaque habitude, la modification la plus récente gagne. */
+function merge(a, b) {
+  const deleted = { ...a.deleted };
+  for (const [id, t] of Object.entries(b.deleted)) deleted[id] = Math.max(deleted[id] || 0, t);
+  const hs = new Map();
+  for (const h of [...a.habits, ...b.habits]) {
+    const cur = hs.get(h.id);
+    if (!cur || h.updatedAt > cur.updatedAt) hs.set(h.id, h);
+  }
+  for (const [id, h] of hs) if (deleted[id] != null && deleted[id] >= h.updatedAt) hs.delete(id);
+  const [first, second] = b.orderAt > a.orderAt ? [b, a] : [a, b];
+  const order = [...first.habits, ...second.habits].map(h => h.id).filter((id, i, arr) => arr.indexOf(id) === i && hs.has(id));
+
+  const keys = new Set([...Object.keys(a.stamps), ...Object.keys(b.stamps)]);
+  for (const s of [a, b]) for (const k in s.log) for (const id in s.log[k]) keys.add(`${k}|${id}`);
+  const log = {}, stamps = {};
+  for (const sk of keys) {
+    const [k, id] = sk.split('|');
+    if (!hs.has(id)) continue;
+    const ta = a.stamps[sk] || 0, tb = b.stamps[sk] || 0;
+    const va = a.log[k]?.[id], vb = b.log[k]?.[id];
+    const [v, t] = ta > tb ? [va, ta] : tb > ta ? [vb, tb] : [va !== undefined ? va : vb, ta];
+    if (t) stamps[sk] = t;
+    if (v !== undefined) (log[k] ||= {})[id] = v;
+  }
+  return { v: 2, habits: order.map(id => hs.get(id)), log, stamps, deleted, orderAt: Math.max(a.orderAt, b.orderAt) };
+}
+
+async function gh(path, opts = {}) {
+  const r = await fetch('https://api.github.com' + path, {
+    ...opts,
+    cache: 'no-store',
+    headers: { Authorization: 'Bearer ' + sync.token, Accept: 'application/vnd.github+json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+  });
+  if (!r.ok) throw new Error(r.status === 401 ? 'Token invalide ou expiré' : r.status === 404 ? 'Gist introuvable (droit « gist » manquant ?)' : `Erreur GitHub ${r.status}`);
+  return r.json();
+}
+/** Retrouve le gist créé par un autre appareil, ou en crée un. */
+async function findOrCreateGist() {
+  for (let page = 1; page <= 10; page++) {
+    const list = await gh(`/gists?per_page=100&page=${page}`);
+    const g = list.find(g => g.description === GIST_DESC && g.files[GIST_FILE]);
+    if (g) return g.id;
+    if (list.length < 100) break;
+  }
+  const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: GIST_DESC, public: false, files: { [GIST_FILE]: { content: JSON.stringify(state) } } }) });
+  return g.id;
+}
+
+async function syncNow() {
+  if (!sync.token) return;
+  if (syncing) { syncAgain = true; return; }
+  clearTimeout(syncTimer);
+  syncing = true; drawSyncBox();
+  try {
+    if (!sync.gistId) { sync.gistId = await findOrCreateGist(); saveSync(); }
+    const g = await gh('/gists/' + sync.gistId);
+    const f = g.files[GIST_FILE];
+    let remote = emptyState();
+    if (f) remote = normalize(JSON.parse(f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content));
+    const merged = merge(state, remote);
+    const out = JSON.stringify(merged);
+    if (out !== JSON.stringify(state)) { state = merged; persist(); render(); }
+    if (out !== JSON.stringify(remote)) {
+      await gh('/gists/' + sync.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content: out } } }) });
+    }
+    sync.last = Date.now(); sync.error = null;
+  } catch (e) {
+    sync.error = e instanceof TypeError ? 'Hors ligne' : e.message;
+  } finally {
+    syncing = false; saveSync(); drawSyncBox();
+    if (syncAgain) { syncAgain = false; syncNow(); }
+  }
+}
+
+function drawSyncBox() {
+  const box = document.getElementById('sync-box');
+  if (!box) return;
+  if (!sync.token) {
+    box.innerHTML = `
+      <p class="note" style="margin-top:0">Synchronise tes habitudes entre ton iPhone et ton Mac via un gist privé de ton compte GitHub.</p>
+      <p class="note">1. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Habits%20sync" target="_blank" rel="noopener">Crée un token GitHub</a> avec uniquement le droit « gist ».<br>2. Colle-le ici, sur chaque appareil.</p>
+      <input class="text" id="f-token" type="password" placeholder="ghp_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn accent" data-a="sync-connect">Connecter</button>`;
+    return;
+  }
+  const time = sync.last ? new Date(sync.last).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : null;
+  const st = syncing ? '<span class="sync-dot busy"></span>Synchronisation…'
+    : sync.error ? `<span class="sync-dot err"></span>${esc(sync.error)}`
+    : time ? `<span class="sync-dot ok"></span>Synchronisé à ${time}` : '<span class="sync-dot"></span>En attente';
+  box.innerHTML = `
+    <div class="sync-status">${st}</div>
+    <div class="order"><button class="btn" data-a="sync-now">Synchroniser</button><button class="btn danger" data-a="sync-off">Déconnecter</button></div>`;
+}
+
 /* ---------- Toast ---------- */
 let toastTimer;
 function toast(msg) {
@@ -637,9 +786,13 @@ function $(s) { return document.querySelector(s); }
 /* ---------- Boot ---------- */
 let lastDay = key(today());
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && key(today()) !== lastDay) { lastDay = key(today()); render(); }
+  if (document.visibilityState === 'visible') {
+    if (key(today()) !== lastDay) { lastDay = key(today()); render(); }
+    syncNow();
+  } else if (syncTimer) syncNow(); // on part : envoie ce qui reste en attente
 });
 render();
+syncNow();
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});

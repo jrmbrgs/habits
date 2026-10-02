@@ -273,3 +273,13 @@ main {
   opacity: 0; pointer-events: none; transition: all .25s; z-index: 30; white-space: nowrap;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Sync ---------- */
+.sync-status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+.sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.sync-dot.ok { background: var(--accent); }
+.sync-dot.err { background: var(--danger); }
+.sync-dot.busy { background: var(--rest); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.note a { color: var(--accent); }
+#f-token { margin-bottom: 0; }

@@ -7,7 +7,8 @@ Petit tracker d'habitudes inspiré de Moto. C'est une PWA statique (HTML/CSS/JS,
 - **7 jours** : tu peux corriger les jours passés (touche pour valider, appui long pour un repos).
 - **Analyse** : série actuelle et meilleure série, taux de réussite sur 30 jours, heatmap sur un an et tes meilleurs jours de la semaine.
 - Trois fréquences possibles : chaque jour, certains jours, ou X fois par semaine.
-- Ça marche hors ligne. Les données restent sur l'appareil (localStorage), avec un export/import JSON dans Réglages.
+- Ça marche hors ligne. Les données sont dans le localStorage de l'appareil, avec un export/import JSON dans Réglages.
+- **Synchro iPhone ↔ Mac** via un gist GitHub privé. Dans Réglages → Synchronisation, colle un token GitHub qui n'a que le droit `gist`, et fais-le sur chaque appareil. Le premier appareil crée le gist, les suivants le retrouvent tout seuls. Si une même case est modifiée sur deux appareils, la modification la plus récente l'emporte.
 
 ## Lancer en local
 ```bash
